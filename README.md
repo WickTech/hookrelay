@@ -71,10 +71,19 @@ Producer  →  POST /hooks/{target}  →  202 (persisted to bbolt)
                                        Target URL  ←→  DLQ on max failure
 ```
 
+## Docker
+
+```bash
+docker pull ghcr.io/wicktech/hookrelay:latest
+docker run -p 8080:8080 \
+  -v $(pwd)/targets.yaml:/targets.yaml:ro \
+  ghcr.io/wicktech/hookrelay:latest
+```
+
 ## Phases
 
 - [x] P1 — Scaffold, ingest, bbolt store, HMAC verify
-- [ ] P2 — Delivery worker, retry/backoff, DLQ
-- [ ] P3 — Admin API, Prometheus metrics, health
-- [ ] P4 — e2e with walletd, GoReleaser, GHCR
+- [x] P2 — Delivery worker, retry/backoff, DLQ
+- [x] P3 — Admin API, Prometheus metrics, health
+- [x] P4 — e2e tests (in-process), GoReleaser, GHCR image
 - [ ] P5 — Fuzz, race, benchmarks, coverage badge

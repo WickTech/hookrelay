@@ -35,6 +35,9 @@ func NewWorker(targets map[string]*config.Target, s *store.Store, notify <-chan 
 	return w
 }
 
+// SetAfter replaces the timer function. Used in tests to eliminate backoff delays.
+func (w *Worker) SetAfter(fn func(time.Duration, func())) { w.after = fn }
+
 // Run processes pending events. Exits when ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
 	w.processPending(ctx)
