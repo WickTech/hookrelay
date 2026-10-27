@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/WickTech/hookrelay/internal/config"
+	"github.com/WickTech/hookrelay/internal/metrics"
 	"github.com/WickTech/hookrelay/internal/store"
 )
 
@@ -92,27 +93,33 @@ func (w *Worker) deliver(ctx context.Context, e *store.Event) {
 
 	start := time.Now()
 	statusCode, deliveryErr := w.post(ctx, target, e.Body)
-	attempt.DurationMS = time.Since(start).Milliseconds()
+	elapsed := time.Since(start)
+	attempt.DurationMS = elapsed.Milliseconds()
 	attempt.StatusCode = statusCode
 	if deliveryErr != nil {
 		attempt.Error = deliveryErr.Error()
 	}
 	_ = w.store.SaveAttempt(e.ID, attempt)
 
+	metrics.DeliveryDuration.WithLabelValues(e.TargetID).Observe(elapsed.Seconds())
+
 	newAttempts := e.Attempts + 1
 
 	if deliveryErr == nil && statusCode >= 200 && statusCode < 300 {
 		w.log.Info("delivered", "id", e.ID, "target", e.TargetID, "attempt", newAttempts)
 		_ = w.store.UpdateEventStatus(e.ID, store.StatusDelivered, newAttempts)
+		metrics.DeliveredTotal.WithLabelValues(e.TargetID).Inc()
 		return
 	}
 
+	metrics.FailedTotal.WithLabelValues(e.TargetID).Inc()
 	w.log.Warn("delivery failed", "id", e.ID, "target", e.TargetID,
 		"attempt", newAttempts, "status", statusCode, "err", deliveryErr)
 
 	if newAttempts >= target.MaxAttempts {
 		w.log.Warn("max attempts reached, moving to DLQ", "id", e.ID)
 		_ = w.store.MoveToDLQ(e.ID)
+		metrics.DLQSize.WithLabelValues(e.TargetID).Inc()
 		return
 	}
 
