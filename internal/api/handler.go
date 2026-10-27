@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/WickTech/hookrelay/internal/config"
 	"github.com/WickTech/hookrelay/internal/hmac"
+	"github.com/WickTech/hookrelay/internal/metrics"
 	"github.com/WickTech/hookrelay/internal/store"
 )
 
@@ -35,6 +37,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /dlq/{relayID}", h.deleteDLQ)
 	mux.HandleFunc("GET /events", h.listEvents)
 	mux.HandleFunc("GET /events/{relayID}", h.getEvent)
+	mux.Handle("GET /metrics", promhttp.Handler())
 }
 
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +74,8 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	metrics.ReceivedTotal.WithLabelValues(targetID).Inc()
+
 	// non-blocking wake of delivery worker
 	select {
 	case h.notify <- struct{}{}:
@@ -101,9 +106,21 @@ func (h *Handler) listDLQ(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) replayDLQ(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("relayID")
+	// fetch target before removing from DLQ so we can update gauge
+	dlqEvents, _, _ := h.store.ListDLQ(0, "")
+	var targetID string
+	for _, e := range dlqEvents {
+		if e.ID == id {
+			targetID = e.TargetID
+			break
+		}
+	}
 	if err := h.store.ReplayFromDLQ(id); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
+	}
+	if targetID != "" {
+		metrics.DLQSize.WithLabelValues(targetID).Dec()
 	}
 	select {
 	case h.notify <- struct{}{}:
