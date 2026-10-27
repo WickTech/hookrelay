@@ -1,0 +1,15 @@
+port: 8080
+db_path: hookrelay.db
+
+targets:
+  - id: my-service
+    url: https://my-service.example.com/webhooks
+    secret: change-me-to-a-strong-secret
+    max_attempts: 10
+    timeout_ms: 5000
+
+  - id: walletd-credits
+    url: http://localhost:9090/events
+    secret: walletd-webhook-secret
+    max_attempts: 10
+    timeout_ms: 3000
