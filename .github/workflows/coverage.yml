@@ -1,0 +1,49 @@
+name: Coverage
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate coverage
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Extract coverage percentage
+        id: cov
+        run: |
+          PCT=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "pct=$PCT" >> "$GITHUB_OUTPUT"
+
+      - name: Write badge JSON to badges branch
+        run: |
+          PCT="${{ steps.cov.outputs.pct }}"
+          COLOR="red"
+          PCT_INT=$(echo "$PCT" | cut -d. -f1)
+          if [ "$PCT_INT" -ge 80 ]; then COLOR="brightgreen"
+          elif [ "$PCT_INT" -ge 60 ]; then COLOR="yellow"
+          elif [ "$PCT_INT" -ge 40 ]; then COLOR="orange"
+          fi
+          JSON="{\"schemaVersion\":1,\"label\":\"coverage\",\"message\":\"${PCT}%\",\"color\":\"${COLOR}\"}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin badges 2>/dev/null || true
+          git checkout badges 2>/dev/null || git checkout --orphan badges
+
+          echo "$JSON" > coverage.json
+          git add coverage.json
+          git diff --cached --quiet || git commit -m "chore: update coverage badge [skip ci]"
+          git push origin badges

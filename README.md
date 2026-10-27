@@ -1,7 +1,8 @@
 # hookrelay
 
 [![CI](https://github.com/WickTech/hookrelay/actions/workflows/ci.yml/badge.svg)](https://github.com/WickTech/hookrelay/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-1.25-blue)](https://go.dev)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/WickTech/hookrelay/badges/coverage.json)](https://github.com/WickTech/hookrelay/actions/workflows/coverage.yml)
+[![Go](https://img.shields.io/badge/go-1.26-blue)](https://go.dev)
 
 Durable webhook relay. Accepts events, returns `202` immediately, then retries delivery with exponential backoff. Zero external dependencies — uses embedded [bbolt](https://github.com/etcd-io/bbolt) for durability.
 
@@ -86,4 +87,4 @@ docker run -p 8080:8080 \
 - [x] P2 — Delivery worker, retry/backoff, DLQ
 - [x] P3 — Admin API, Prometheus metrics, health
 - [x] P4 — e2e tests (in-process), GoReleaser, GHCR image
-- [ ] P5 — Fuzz, race, benchmarks, coverage badge
+- [x] P5 — Fuzz tests, benchmarks, coverage badge
