@@ -13,7 +13,7 @@ Durable webhook relay. Accepts events, returns `202` immediately, then retries d
 - **Exponential backoff + jitter** (1s → cap 5 min), configurable max attempts
 - **Dead Letter Queue** with replay and discard APIs
 - **Prometheus metrics** on `/metrics`
-- **Admin API** — list events, view delivery attempts
+- **Admin API** — list events, view delivery attempts (bearer-token protected)
 - **Zero infrastructure** — single binary, embedded DB
 
 ## Quick start
@@ -21,6 +21,7 @@ Durable webhook relay. Accepts events, returns `202` immediately, then retries d
 ```bash
 cp targets.example.yaml targets.yaml
 # edit targets.yaml with your target URLs and secrets
+export HOOKRELAY_ADMIN_TOKEN=$(openssl rand -hex 32)
 go run ./cmd/hookrelay targets.yaml
 ```
 
@@ -37,8 +38,11 @@ curl -X POST http://localhost:8080/hooks/my-service \
 
 ```yaml
 # targets.yaml
+host: ""            # "" = all interfaces; 127.0.0.1 = local only
 port: 8080
 db_path: hookrelay.db
+admin:
+  token: ""         # bearer token for /events, /dlq, /metrics (prefer the env var)
 
 targets:
   - id: my-service
@@ -48,18 +52,46 @@ targets:
     timeout_ms: 5000
 ```
 
+Environment overrides: `HOOKRELAY_ADMIN_TOKEN` (admin.token), `HOOKRELAY_HOST` (host),
+`HOOKRELAY_DB_PATH` (db_path).
+
+### Admin authentication
+
+`/events*`, `/dlq*` and `/metrics` require `Authorization: Bearer <admin.token>`.
+Missing or wrong tokens get `401` with `WWW-Authenticate: Bearer`. `/hooks/{target-id}`
+stays public (each request is verified by its HMAC signature) and `/health` stays open.
+
+hookrelay **refuses to start** when `admin.token` is empty unless `host` is a loopback
+address (`127.0.0.1`, `::1`, `localhost`).
+
+```bash
+curl -H "Authorization: Bearer $HOOKRELAY_ADMIN_TOKEN" http://localhost:8080/dlq
+```
+
+Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: hookrelay
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/hookrelay_admin_token
+    static_configs:
+      - targets: ["hookrelay:8080"]
+```
+
 ## API
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/hooks/{target-id}` | Ingest webhook event |
-| `GET` | `/health` | Health check |
-| `GET` | `/events` | List events (`?target=&status=&limit=&cursor=`) |
-| `GET` | `/events/{id}` | Event detail + delivery attempts |
-| `GET` | `/dlq` | List Dead Letter Queue (`?limit=&cursor=`) |
-| `POST` | `/dlq/{id}/replay` | Re-enqueue a DLQ event |
-| `DELETE` | `/dlq/{id}` | Discard a DLQ event |
-| `GET` | `/metrics` | Prometheus metrics |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/hooks/{target-id}` | HMAC signature | Ingest webhook event |
+| `GET` | `/health` | none | Health check |
+| `GET` | `/events` | bearer | List events (`?target=&status=&limit=&cursor=`) |
+| `GET` | `/events/{id}` | bearer | Event detail + delivery attempts |
+| `GET` | `/dlq` | bearer | List Dead Letter Queue (`?limit=&cursor=`) |
+| `POST` | `/dlq/{id}/replay` | bearer | Re-enqueue a DLQ event |
+| `DELETE` | `/dlq/{id}` | bearer | Discard a DLQ event |
+| `GET` | `/metrics` | bearer | Prometheus metrics |
 
 ## Architecture
 
@@ -77,9 +109,15 @@ Producer  →  POST /hooks/{target}  →  202 (persisted to bbolt)
 ```bash
 docker pull ghcr.io/wicktech/hookrelay:latest
 docker run -p 8080:8080 \
+  -e HOOKRELAY_ADMIN_TOKEN="$(openssl rand -hex 32)" \
   -v $(pwd)/targets.yaml:/targets.yaml:ro \
+  -v hookrelay-data:/data \
   ghcr.io/wicktech/hookrelay:latest
 ```
+
+The image runs as UID/GID `65532` (distroless `nonroot`) and stores the bbolt database at
+`/data/hookrelay.db`. A named volume inherits the right ownership; for a bind mount, make
+the host directory writable by `65532` (`sudo chown 65532:65532 ./data`).
 
 ## Phases
 

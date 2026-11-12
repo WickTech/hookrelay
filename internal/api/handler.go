@@ -1,11 +1,14 @@
 package api
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,25 +22,73 @@ import (
 const version = "0.1.0"
 
 type Handler struct {
-	targets map[string]*config.Target
-	store   *store.Store
-	notify  chan<- struct{} // wakes the delivery worker
-	log     *slog.Logger
+	targets    map[string]*config.Target
+	store      *store.Store
+	notify     chan<- struct{} // wakes the delivery worker
+	log        *slog.Logger
+	adminToken string
 }
 
-func New(targets map[string]*config.Target, s *store.Store, notify chan<- struct{}, log *slog.Logger) *Handler {
-	return &Handler{targets: targets, store: s, notify: notify, log: log}
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithAdminToken requires "Authorization: Bearer <token>" on the admin API
+// (/events, /dlq) and /metrics. An empty token leaves those routes open; the
+// caller must ensure that only happens on a loopback listener
+// (see config.CheckAdminExposure).
+func WithAdminToken(token string) Option {
+	return func(h *Handler) { h.adminToken = token }
+}
+
+func New(targets map[string]*config.Target, s *store.Store, notify chan<- struct{}, log *slog.Logger, opts ...Option) *Handler {
+	h := &Handler{targets: targets, store: s, notify: notify, log: log}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
+	// Public: ingest is authenticated per target by HMAC signature.
 	mux.HandleFunc("POST /hooks/{targetID}", h.ingest)
 	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /dlq", h.listDLQ)
-	mux.HandleFunc("POST /dlq/{relayID}/replay", h.replayDLQ)
-	mux.HandleFunc("DELETE /dlq/{relayID}", h.deleteDLQ)
-	mux.HandleFunc("GET /events", h.listEvents)
-	mux.HandleFunc("GET /events/{relayID}", h.getEvent)
-	mux.Handle("GET /metrics", promhttp.Handler())
+
+	// Admin: bearer token.
+	mux.Handle("GET /dlq", h.requireAdmin(http.HandlerFunc(h.listDLQ)))
+	mux.Handle("POST /dlq/{relayID}/replay", h.requireAdmin(http.HandlerFunc(h.replayDLQ)))
+	mux.Handle("DELETE /dlq/{relayID}", h.requireAdmin(http.HandlerFunc(h.deleteDLQ)))
+	mux.Handle("GET /events", h.requireAdmin(http.HandlerFunc(h.listEvents)))
+	mux.Handle("GET /events/{relayID}", h.requireAdmin(http.HandlerFunc(h.getEvent)))
+	mux.Handle("GET /metrics", h.requireAdmin(promhttp.Handler()))
+}
+
+// requireAdmin rejects requests without the configured bearer token.
+func (h *Handler) requireAdmin(next http.Handler) http.Handler {
+	if h.adminToken == "" {
+		return next
+	}
+	// Compare fixed-length digests so the comparison does not leak the token length.
+	want := sha256.Sum256([]byte(h.adminToken))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, ok := bearerToken(r.Header.Get("Authorization"))
+		gotSum := sha256.Sum256([]byte(got))
+		if !ok || subtle.ConstantTimeCompare(gotSum[:], want[:]) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="hookrelay"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
+func bearerToken(header string) (string, bool) {
+	scheme, token, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	token = strings.TrimSpace(token)
+	return token, token != ""
 }
 
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {

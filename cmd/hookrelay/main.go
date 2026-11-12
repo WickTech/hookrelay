@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,7 +40,7 @@ func main() {
 	notify := make(chan struct{}, 1)
 
 	mux := http.NewServeMux()
-	h := api.New(targets, s, notify, log)
+	h := api.New(targets, s, notify, log, api.WithAdminToken(cfg.Admin.Token))
 	h.Register(mux)
 
 	worker := relay.NewWorker(targets, s, notify, log)
@@ -52,11 +51,12 @@ func main() {
 	go worker.Run(ctx)
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              cfg.ListenAddr(),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second, // deliveries run in the worker, not in handlers
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -66,6 +66,9 @@ func main() {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
+	if cfg.Admin.Token == "" {
+		log.Warn("admin token not set: admin API and /metrics are open on loopback only", "addr", srv.Addr)
+	}
 	log.Info("hookrelay starting", "addr", srv.Addr, "targets", len(targets))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Error("server error", "err", err)
