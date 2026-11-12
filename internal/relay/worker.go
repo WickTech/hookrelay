@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -27,10 +28,21 @@ type Worker struct {
 	log      *slog.Logger
 	after    func(time.Duration, func()) // injectable for tests
 	inflight sync.Map                    // eventID → struct{}: prevents duplicate concurrent delivery
+	client   *http.Client                // shared across deliveries so connections are reused
+}
+
+// newClient builds the shared delivery client. Targets have different
+// timeouts, so the per-target timeout is applied per request via context
+// (it covers connect, headers and body drain); the cloned default transport
+// keeps its dial and TLS handshake timeouts.
+func newClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 16
+	return &http.Client{Transport: t}
 }
 
 func NewWorker(targets map[string]*config.Target, s *store.Store, notify <-chan struct{}, log *slog.Logger) *Worker {
-	w := &Worker{targets: targets, store: s, notify: notify, log: log}
+	w := &Worker{targets: targets, store: s, notify: notify, log: log, client: newClient()}
 	w.after = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
 	return w
 }
@@ -145,7 +157,8 @@ func (w *Worker) deliver(ctx context.Context, e *store.Event) {
 
 func (w *Worker) post(ctx context.Context, target *config.Target, body []byte) (int, error) {
 	timeout := time.Duration(target.TimeoutMS) * time.Millisecond
-	client := &http.Client{Timeout: timeout}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.URL, bytes.NewReader(body))
 	if err != nil {
@@ -153,10 +166,12 @@ func (w *Worker) post(ctx context.Context, target *config.Target, body []byte) (
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := w.client.Do(req)
 	if err != nil {
 		return 0, err
 	}
+	// Drain (bounded) so the connection can be reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	resp.Body.Close()
 	return resp.StatusCode, nil
 }

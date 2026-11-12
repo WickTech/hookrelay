@@ -92,11 +92,16 @@ func TestE2E_TenDeliveries(t *testing.T) {
 		}
 	}
 
-	// 4. Wait for all deliveries
+	// 4. Wait for all deliveries. The consumer counts a request on arrival, but
+	// the worker marks the event delivered only after the response, so wait
+	// for the store too.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if received.Load() == numEvents {
-			break
+			delivered, _, err := s.ListEvents(targetID, "delivered", 0, "")
+			if err == nil && len(delivered) == numEvents {
+				break
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

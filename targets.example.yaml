@@ -1,5 +1,13 @@
+# host: interface to listen on. Empty = all interfaces (admin.token required).
+# Set 127.0.0.1 to keep the admin API local-only without a token.
+host: ""
 port: 8080
 db_path: hookrelay.db
+
+# Bearer token for /events, /dlq and /metrics. Prefer the HOOKRELAY_ADMIN_TOKEN
+# env var over writing it here. Generate one with: openssl rand -hex 32
+admin:
+  token: ""
 
 targets:
   - id: my-service
